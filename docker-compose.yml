@@ -1,0 +1,72 @@
+services:
+
+  # ── Airflow (standalone = webserver + scheduler in one container) ──────────
+  airflow:
+    image: apache/airflow:2.9.3
+    command: standalone
+    environment:
+      AIRFLOW__CORE__EXECUTOR: SequentialExecutor        # compatible with SQLite metadata DB
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags
+      AIRFLOW__CORE__DAGBAG_IMPORT_TIMEOUT: "60"         # allow slow DAG imports
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true" # don't auto-run new DAGs
+
+      # Metadata DB — explicit SQLite path keeps it inside the container
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: "sqlite:////opt/airflow/airflow.db"
+
+      # Webserver — 1 worker keeps memory low
+      AIRFLOW__WEBSERVER__WORKERS: "1"
+      AIRFLOW__WEBSERVER__WEB_SERVER_MASTER_TIMEOUT: "120"
+      AIRFLOW__WEBSERVER__WEB_SERVER_WORKER_TIMEOUT: "120"
+
+      # Scheduler — reduce CPU/memory footprint
+      AIRFLOW__SCHEDULER__PARSING_PROCESSES: "1"
+      AIRFLOW__SCHEDULER__MIN_FILE_PROCESS_INTERVAL: "30"
+      AIRFLOW__SCHEDULER__DAG_DIR_LIST_INTERVAL: "30"
+
+      # Admin user
+      _AIRFLOW_WWW_USER_CREATE: "true"
+      _AIRFLOW_WWW_USER_USERNAME: admin
+      _AIRFLOW_WWW_USER_PASSWORD: admin
+    volumes:
+      - ./dags:/opt/airflow/dags                        # DAG files
+      - ./input:/opt/airflow/input:ro                   # source CSVs (read-only)
+      - pipeline-db:/opt/airflow/db                     # target brokerage SQLite DB (shared)
+      - airflow-home:/opt/airflow                       # persist metadata DB across restarts
+    depends_on:
+      - db
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 120s                                # give standalone more time to boot
+    restart: on-failure
+
+  # ── SQLite (target database — initialises the db file and stays alive) ─────
+  db:
+    image: keinos/sqlite3
+    user: "0"                                           # run as root so it can write to the Docker volume
+    entrypoint: ["/bin/sh", "-c", "chmod 777 /db && sqlite3 /db/brokerage.db 'PRAGMA journal_mode=WAL;' && chmod 666 /db/brokerage.db && tail -f /dev/null"]
+    volumes:
+      - pipeline-db:/db                                 # shared target DB volume
+    restart: on-failure
+
+  # ── SQLite Web Viewer ──────────────────────────────────────────────────────
+  sqlite-web:
+    image: coleifer/sqlite-web
+    entrypoint: sqlite_web
+    command: ["-H", "0.0.0.0", "-p", "8081", "/db/brokerage.db"]
+    depends_on:
+      - db
+    volumes:
+      - pipeline-db:/db                                 # same volume as airflow target DB
+    ports:
+      - "8081:8081"
+    restart: on-failure
+
+volumes:
+  pipeline-db:    # shared target SQLite database
+  airflow-home:   # persists airflow.db and logs across container restarts

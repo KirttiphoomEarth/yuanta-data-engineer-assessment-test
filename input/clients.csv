@@ -1,0 +1,16 @@
+client_id,client_name,country,kyc_status,created_at
+C001,"Alice Capital",US,APPROVED,2024-01-15
+C002,"Bob Investments",SG,APPROVED,2024-03-22
+C003,"Charlie Partners",GB,PENDING,2025-06-10
+C004,"Delta Trading",ID,REJECTED,2023-11-05
+C005,"Echo Fund",,APPROVED,2025-12-01
+C006,"Foxtrot Securities",US,APPROVED,2022-08-19
+C007,"Gamma Holdings",AU,APPROVED,2023-02-14
+C008,"Helios Asset Mgmt",DE,PENDING,2025-01-09
+C009,"Indigo Capital",JP,APPROVED,2021-05-30
+C010,"Jade Partners",HK,REJECTED,2024-09-12
+C011,"Kappa Quant",SG,APPROVED,2020-12-04
+C012,"Lima Family Office",GB,APPROVED,2023-07-21
+C013,"Mango Investments",ID,PENDING,2025-10-02
+C014,"Northbridge Fund",US,APPROVED,2019-03-11
+C015,"Orchid Ventures",FR,APPROVED,2022-11-27
