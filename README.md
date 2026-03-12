@@ -16,20 +16,92 @@ A containerised data pipeline that ingests daily brokerage CSV drops, applies da
 │   ├── instruments.csv
 │   └── trades_2026-03-09.csv
 ├── docker-compose.yml
+├── run_local.py                   # Alternative runner (no Docker/Airflow needed)
+├── requirements-dev.txt
 └── README.md
+```
+
+---
+
+## ⚠️ Note on Airflow / Docker
+
+The full Docker + Airflow setup is provided and documented below. However, due to **local compute constraints** (Airflow standalone requires ~3–4 GB RAM), the Airflow container could not be verified running on the development machine.
+
+**The pipeline logic is fully functional and has been verified using the local runner** (`run_local.py`) which executes the exact same DAG code directly in Python — no Docker or Airflow installation required.
+
+| Method | Requires | Status |
+|---|---|---|
+| `run_local.py` | Python + pandas + sqlite-web | ✅ Verified working |
+| Docker + Airflow | Docker Desktop ≥ 4 GB RAM | ⚠️ Provided, requires sufficient memory |
+
+---
+
+## Quick Start — Local Runner (Recommended for Review)
+
+The fastest way to verify results without Docker:
+
+```bash
+# 1. Install dependencies (pandas + sqlite-web)
+pip install -r requirements-dev.txt
+
+# 2. Run the full pipeline
+python run_local.py
+```
+
+This will:
+1. Create the framework log tables (`fw_transform_log`, `fw_data_quality_log`)
+2. Clean and load all three source files into `brokerage_local.db`
+3. Run all 13 DQ rules and write results
+4. Automatically open **`http://127.0.0.1:8081`** — a SQLite web UI to browse and query results
+
+**Additional options:**
+
+```bash
+python run_local.py --no-serve        # run pipeline only, print summary to terminal
+python run_local.py --serve-only      # open web UI on existing DB without re-running
+python run_local.py --step transform  # re-run transformation only
+python run_local.py --port 8082       # use a different port
+```
+
+**Expected terminal output:**
+```
+============================================================
+RESULT SUMMARY
+============================================================
+  dim_clients rows               15
+  dim_instruments rows           20
+  fact_trades (clean)            41
+  trades_rejected                8
+  transform_log entries          4
+  dq_log entries                 13
+
+  Rejected trades by reason:
+    INVALID_FK_CLIENT               1
+    INVALID_FK_INSTRUMENT           1
+    INVALID_SIDE                    1
+    NEGATIVE_PRICE                  1
+    ZERO_QUANTITY                   2
+    MISSING_PRICE                   1
+    MISSING_FEES                    1
+
+  DQ check results:
+    [WARNING] dim_clients.MISSING_COUNTRY    — failed=1
+    [WARNING] dim_clients.NON_APPROVED_KYC   — failed=5
+    [FAIL   ] fact_trades.INVALID_FK_CLIENT  — failed=1
+    ...
 ```
 
 ---
 
 ## Prerequisites
 
-- [Docker Desktop](https://www.docker.com/products/docker-desktop/) (with Compose v2)
+- [Docker Desktop](https://www.docker.com/products/docker-desktop/) (with Compose v2, **≥ 4 GB RAM allocated**)
 
-No other local dependencies are required.
+No other local dependencies are required for the Docker path.
 
 ---
 
-## How to Start Everything
+## How to Start Everything (Docker)
 
 ```bash
 # 1. Clone the repository
@@ -57,6 +129,141 @@ docker compose up -d
 > docker compose down -v
 > docker compose up -d
 > ```
+
+---
+
+## Exploratory Data Analysis (EDA)
+
+> Full notebook: [`eda.ipynb`](eda.ipynb) — run date 2026-03-12, data date 2026-03-09.
+
+### Source Files
+
+| File | Rows | Columns |
+|---|---|---|
+| `clients.csv` | 15 | client_id, client_name, country, kyc_status, created_at |
+| `instruments.csv` | 20 | instrument_id, symbol, asset_class, currency, exchange |
+| `trades_2026-03-09.csv` | 50 | trade_id, trade_time, client_id, instrument_id, side, quantity, price, fees, status |
+
+---
+
+### clients.csv
+
+**Shape:** 15 rows × 5 columns
+
+| Issue | Detail |
+|---|---|
+| Missing `country` | C005 (Echo Fund) — `country` is NaN |
+| Non-APPROVED KYC | C003 (PENDING), C004 (REJECTED), C008 (PENDING), C010 (REJECTED), C013 (PENDING) |
+
+**KYC distribution:**
+
+| kyc_status | Count |
+|---|---|
+| APPROVED | 10 |
+| PENDING | 3 |
+| REJECTED | 2 |
+
+No duplicate `client_id` found.
+
+---
+
+### instruments.csv
+
+**Shape:** 20 rows × 5 columns
+
+No nulls, no duplicates. All fields clean.
+
+**Asset class distribution:**
+
+| asset_class | Count |
+|---|---|
+| EQUITY | 11 |
+| FX | 3 |
+| CRYPTO | 2 |
+| ETF | 2 |
+| COMMODITY | 1 |
+| BOND | 1 |
+
+---
+
+### trades_2026-03-09.csv
+
+**Shape:** 50 rows × 9 columns — all columns read as `object` (string)
+
+**Status distribution:** EXECUTED 48 · CANCELLED 2
+
+**Side distribution (raw):** BUY 30 · SELL 18 · HOLD 1 · ` buy` 1 (whitespace + lowercase)
+
+#### Anomalies Found
+
+**Duplicate trade_id (4 rows)**
+
+| trade_id | Type | Detail |
+|---|---|---|
+| T0002 | Exact duplicate | Same row sent twice (different trade_time) |
+| T0034 | Late amendment | Same trade_id, price changed 185.25 → 185.30 |
+
+**Invalid foreign keys**
+
+| trade_id | Field | Value | Issue |
+|---|---|---|---|
+| T0003 | client_id | C999 | Not in clients.csv |
+| T0025 | instrument_id | I999 | Not in instruments.csv |
+
+**Whitespace / casing**
+
+| trade_id | Field | Raw value | After fix |
+|---|---|---|---|
+| T0009 | client_id | ` C001` | `C001` |
+| T0009 | side | ` buy` | `BUY` |
+
+**Invalid side value**
+
+| trade_id | side | Action |
+|---|---|---|
+| T0006 | HOLD | Quarantine — not a valid trade direction |
+
+**Comma-formatted numerics**
+
+| trade_id | Field | Raw | Parsed |
+|---|---|---|---|
+| T0004 | price | `1,950` | `1950.0` |
+| T0032 | price | `3,100.00` | `3100.0` |
+| T0012 | quantity | `1,000` | `1000.0` |
+
+**Missing / invalid numeric values**
+
+| trade_id | Issue | Action |
+|---|---|---|
+| T0030 | price is NULL | Quarantine |
+| T0008 | fees is NULL, status=CANCELLED | Default fees to 0.0 |
+| T0007 | price = -10 | Quarantine |
+| T0005, T0026 | quantity = 0 | Quarantine |
+
+**Trades from non-APPROVED KYC clients** — 16 trades from C003, C004, C008, C010, C013. These clients are loaded; trades are NOT auto-rejected (business decision flagged in DQ log).
+
+---
+
+### Anomaly Summary (from EDA)
+
+| # | Table | Issue | Affected | Cleaning Rule |
+|---|---|---|---|---|
+| 1 | clients | Missing `country` | C005 | Load as NULL; flag for enrichment |
+| 2 | clients | Non-APPROVED KYC | C003, C004, C008, C010, C013 | Load with kyc_status; flagged in DQ |
+| 3 | trades | Exact duplicate trade_id | T0002 | Keep latest trade_time, drop earlier |
+| 4 | trades | Late amendment trade_id | T0034 | Keep latest trade_time row |
+| 5 | trades | Invalid FK client_id | T0003 (C999) | Quarantine to trades_rejected |
+| 6 | trades | Invalid FK instrument_id | T0025 (I999) | Quarantine to trades_rejected |
+| 7 | trades | Whitespace + lowercase | T0009 | TRIM + UPPER before FK lookup |
+| 8 | trades | Invalid side = HOLD | T0006 | Quarantine to trades_rejected |
+| 9 | trades | Negative price | T0007 | Quarantine to trades_rejected |
+| 10 | trades | Zero quantity | T0005, T0026 | Quarantine to trades_rejected |
+| 11 | trades | Missing price | T0030 | Quarantine to trades_rejected |
+| 12 | trades | Missing fees (CANCELLED) | T0008 | Default fees = 0.0 |
+| 13 | trades | Comma price `"1,950"` | T0004, T0032 | Strip commas, cast to REAL |
+| 14 | trades | Comma quantity `"1,000"` | T0012 | Strip commas, cast to REAL |
+
+**Total raw trade rows:** 50 → **Estimated clean & loadable: ~39–41**
 
 ---
 

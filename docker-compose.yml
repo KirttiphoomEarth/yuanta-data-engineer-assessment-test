@@ -4,27 +4,29 @@ services:
   airflow:
     image: apache/airflow:2.9.3
     command: standalone
+    user: "0"                                           # run as root — avoids all volume permission issues
     environment:
       AIRFLOW__CORE__EXECUTOR: SequentialExecutor        # compatible with SQLite metadata DB
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
       AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags
-      AIRFLOW__CORE__DAGBAG_IMPORT_TIMEOUT: "60"         # allow slow DAG imports
-      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true" # don't auto-run new DAGs
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true" # prevent auto-run before pipeline_initial runs
+      AIRFLOW__CORE__DAGBAG_IMPORT_TIMEOUT: "60"
 
-      # Metadata DB — explicit SQLite path keeps it inside the container
-      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: "sqlite:////opt/airflow/airflow.db"
+      # Metadata DB — dedicated directory so it survives container restarts
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: "sqlite:////opt/airflow/meta/airflow.db"
 
-      # Webserver — 1 worker keeps memory low
+      # Webserver — 1 worker to keep memory usage low
       AIRFLOW__WEBSERVER__WORKERS: "1"
       AIRFLOW__WEBSERVER__WEB_SERVER_MASTER_TIMEOUT: "120"
       AIRFLOW__WEBSERVER__WEB_SERVER_WORKER_TIMEOUT: "120"
+      AIRFLOW__WEBSERVER__RATELIMIT_STORAGE_URL: "memory://"  # suppress Flask-Limiter warning
 
-      # Scheduler — reduce CPU/memory footprint
+      # Scheduler — reduce CPU / memory footprint
       AIRFLOW__SCHEDULER__PARSING_PROCESSES: "1"
       AIRFLOW__SCHEDULER__MIN_FILE_PROCESS_INTERVAL: "30"
       AIRFLOW__SCHEDULER__DAG_DIR_LIST_INTERVAL: "30"
 
-      # Admin user
+      # Admin user (created on first boot only)
       _AIRFLOW_WWW_USER_CREATE: "true"
       _AIRFLOW_WWW_USER_USERNAME: admin
       _AIRFLOW_WWW_USER_PASSWORD: admin
@@ -32,7 +34,7 @@ services:
       - ./dags:/opt/airflow/dags                        # DAG files
       - ./input:/opt/airflow/input:ro                   # source CSVs (read-only)
       - pipeline-db:/opt/airflow/db                     # target brokerage SQLite DB (shared)
-      - airflow-home:/opt/airflow                       # persist metadata DB across restarts
+      - airflow-meta:/opt/airflow/meta                  # Airflow metadata DB (persisted separately)
     depends_on:
       - db
     ports:
@@ -42,7 +44,7 @@ services:
       interval: 30s
       timeout: 10s
       retries: 10
-      start_period: 120s                                # give standalone more time to boot
+      start_period: 120s
     restart: on-failure
 
   # ── SQLite (target database — initialises the db file and stays alive) ─────
@@ -68,5 +70,5 @@ services:
     restart: on-failure
 
 volumes:
-  pipeline-db:    # shared target SQLite database
-  airflow-home:   # persists airflow.db and logs across container restarts
+  pipeline-db:    # shared target SQLite database (brokerage.db)
+  airflow-meta:   # Airflow metadata DB (airflow.db) — persisted across container restarts
